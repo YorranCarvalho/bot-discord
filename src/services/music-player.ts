@@ -235,6 +235,8 @@ const startNext = async (guildId: string) => {
       "--no-playlist",
       "-o",
       "-",
+      "--cookies",
+      "/home/ubuntu/bot-discord/cookies.txt",
       sourceInput,
     ];
 

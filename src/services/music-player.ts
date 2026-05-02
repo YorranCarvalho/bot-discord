@@ -1,91 +1,61 @@
-import { spawn } from "node:child_process";
-import type { ChildProcessByStdio } from "node:child_process";
 import { createRequire } from "node:module";
-import type { Readable } from "node:stream";
-
-import {
-  AudioPlayer,
-  AudioPlayerStatus,
-  NoSubscriberBehavior,
-  VoiceConnection,
-  VoiceConnectionStatus,
-  createAudioPlayer,
-  createAudioResource,
-  demuxProbe,
-  entersState,
-  joinVoiceChannel,
-} from "@discordjs/voice";
 
 import type { GuildMember, Message } from "discord.js";
 import { ChannelType, EmbedBuilder } from "discord.js";
+import { Player } from "discord-player";
+import { YoutubeiExtractor } from "discord-player-youtubei";
 
 const require = createRequire(import.meta.url);
 const spotifyUrlInfo = require("spotify-url-info");
 const { getData } = spotifyUrlInfo(fetch);
 
-interface QueueItem {
-  query: string;
-  requestedBy: string;
-  textMessage: Message;
-}
-
-interface GuildMusicState {
-  queue: QueueItem[];
-  connection: VoiceConnection | null;
-  player: AudioPlayer;
-  currentProcess: ChildProcessByStdio<null, Readable, Readable> | null;
-  current: QueueItem | null;
-  isPlaying: boolean;
-  loopMode: "off" | "song" | "queue";
-  autoplay: boolean;
-  isStarting?: boolean;
-  playbackVersion: number;
-  handlersRegistered: boolean;
-  isSkipping: boolean;
-}
-
-const guildStates = new Map<string, GuildMusicState>();
 const MAX_PLAYLIST_SIZE = 50;
 
-const getState = (guildId: string): GuildMusicState => {
-  const existing = guildStates.get(guildId);
-  if (existing) return existing;
+let player: Player | null = null;
+let extractorsReady = false;
 
-  const state: GuildMusicState = {
-    queue: [],
-    connection: null,
-    player: createAudioPlayer({
-      behaviors: {
-        noSubscriber: NoSubscriberBehavior.Pause,
-      },
-    }),
-    currentProcess: null,
-    current: null,
-    isPlaying: false,
-    loopMode: "off",
-    autoplay: false,
-    isStarting: false,
-    playbackVersion: 0,
-    handlersRegistered: false,
-    isSkipping: false,
-  };
+const getPlayer = async (message: Message) => {
+  if (!player) {
+    player = new Player(message.client);
 
-  guildStates.set(guildId, state);
-  return state;
+    player.events.on("playerStart", async (queue, track) => {
+      const metadata = queue.metadata as Message | undefined;
+      if (!metadata?.channel.isSendable()) return;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("🎵 Tocando agora")
+        .setDescription(`**${track.title}**`)
+        .addFields({
+          name: "Pedido por",
+          value: track.requestedBy?.username ?? "Desconhecido",
+          inline: true,
+        });
+
+      await metadata.channel.send({ embeds: [embed] });
+    });
+
+    player.events.on("error", (_, error) => {
+      console.error("Erro no player:", error);
+    });
+
+    player.events.on("playerError", (_, error) => {
+      console.error("Erro ao tocar música:", error);
+    });
+  }
+
+  if (!extractorsReady) {
+    await player.extractors.register(YoutubeiExtractor, {});
+    extractorsReady = true;
+  }
+
+  return player;
 };
 
 const sendToChannel = async (message: Message, content: string) => {
   if (!message.channel.isSendable()) return;
   await message.channel.send(content);
 };
-
-const sendEmbedToChannel = async (message: Message, embed: EmbedBuilder) => {
-  if (!message.channel.isSendable()) return;
-  await message.channel.send({ embeds: [embed] });
-};
-
-const isYoutubeUrl = (input: string) =>
-  input.includes("youtube.com") || input.includes("youtu.be");
 
 const isSpotifyUrl = (input: string) => input.includes("open.spotify.com");
 
@@ -160,160 +130,9 @@ const resolveSpotifyToQueries = async (input: string): Promise<string[]> => {
   return [];
 };
 
-const buildYtDlpInput = (input: string) => {
-  if (isYoutubeUrl(input)) return input;
-
-  const query = input.includes("official audio")
-    ? input
-    : `${input} official audio`;
-
-  return `ytsearch1:${query}`;
-};
-
-const isExpectedYtDlpNoise = (text: string) => {
-  return (
-    text.includes("Broken pipe") ||
-    text.includes("Invalid argument") ||
-    text.includes("unable to write data")
-  );
-};
-
-const startNext = async (guildId: string) => {
-  const state = getState(guildId);
-
-  if (state.isStarting) return;
-
-  state.isStarting = true;
-  const playbackVersion = state.playbackVersion;
-
-  let shouldStartNextAfterFailure = false;
-
-  try {
-    let next: QueueItem | undefined;
-
-    if (state.loopMode === "song" && state.current) {
-      next = state.current;
-    } else {
-      next = state.queue.shift();
-
-      if (state.loopMode === "queue" && state.current) {
-        state.queue.push(state.current);
-      }
-    }
-
-    if (!next && state.autoplay && state.current) {
-      next = {
-        ...state.current,
-        query: `${state.current.query} similar songs`,
-      };
-    }
-
-    if (!next) {
-      state.current = null;
-      state.isPlaying = false;
-
-      if (state.connection) {
-        state.connection.destroy();
-        state.connection = null;
-      }
-
-      return;
-    }
-
-    state.current = next;
-    state.isPlaying = true;
-
-    const sourceInput = buildYtDlpInput(next.query);
-
-    const ytDlpArgs = [
-      "--quiet",
-      "--no-warnings",
-      "--encoding",
-      "utf-8",
-      "-f",
-      "bestaudio[ext=webm]/bestaudio/best",
-      "--extractor-args",
-      "youtube:player_client=android,ios,web",
-      "--force-ipv4",
-      "--geo-bypass",
-      "--cookies",
-      "/home/ubuntu/bot-discord/cookies.txt",
-      "--no-playlist",
-      "-o",
-      "-",
-      sourceInput,
-    ];
-
-    const ytDlp = spawn("yt-dlp", ytDlpArgs, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8",
-      },
-    });
-
-    state.currentProcess = ytDlp;
-
-    ytDlp.stderr.on("data", (data) => {
-      const text = data.toString();
-
-      if (isExpectedYtDlpNoise(text)) return;
-
-      console.error(`yt-dlp: ${text}`);
-    });
-
-    ytDlp.on("error", (error) => {
-      console.error("Erro no yt-dlp:", error);
-    });
-
-    const probe = await demuxProbe(ytDlp.stdout);
-
-    const resource = createAudioResource(probe.stream, {
-      inputType: probe.type,
-    });
-
-    if (playbackVersion !== state.playbackVersion) {
-      ytDlp.kill();
-      return;
-    }
-
-    state.player.play(resource);
-
-    const embed = new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setTitle("🎵 Tocando agora")
-      .setDescription(`**${next.query}**`)
-      .addFields({
-        name: "Pedido por",
-        value: next.requestedBy,
-        inline: true,
-      });
-
-    await sendEmbedToChannel(next.textMessage, embed);
-  } catch (error) {
-    console.error("Erro ao criar recurso de áudio:", error);
-
-    if (state.currentProcess) {
-      state.currentProcess.kill();
-      state.currentProcess = null;
-    }
-
-    if (state.current) {
-      await sendToChannel(
-        state.current.textMessage,
-        `❌ Não consegui tocar: **${state.current.query}**. Pulando para a próxima.`
-      );
-    }
-
-    shouldStartNextAfterFailure = true;
-  } finally {
-    state.isStarting = false;
-    state.isSkipping = false;
-  }
-
-  if (shouldStartNextAfterFailure) {
-    await startNext(guildId);
-  }
+const getGuildQueue = (message: Message) => {
+  if (!player || !message.guildId) return null;
+  return player.nodes.get(message.guildId);
 };
 
 export const addToQueue = async (message: Message, query: string) => {
@@ -332,46 +151,7 @@ export const addToQueue = async (message: Message, query: string) => {
     return;
   }
 
-  const state = getState(guild.id);
-
-  if (!state.connection) {
-    state.connection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: guild.id,
-      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-      selfDeaf: false,
-    });
-
-    await entersState(state.connection, VoiceConnectionStatus.Ready, 20_000);
-
-    state.connection.subscribe(state.player);
-
-    if (!state.handlersRegistered) {
-      state.handlersRegistered = true;
-
-      state.player.on(AudioPlayerStatus.Idle, async () => {
-        if (state.currentProcess) {
-          state.currentProcess.kill();
-          state.currentProcess = null;
-        }
-
-        state.isPlaying = false;
-
-        await startNext(guild.id);
-      });
-
-      state.player.on("error", async (error) => {
-        console.error("Erro no player:", error);
-
-        if (state.currentProcess) {
-          state.currentProcess.kill();
-          state.currentProcess = null;
-        }
-
-        await startNext(guild.id);
-      });
-    }
-  }
+  const musicPlayer = await getPlayer(message);
 
   let queries = [query];
 
@@ -392,185 +172,144 @@ export const addToQueue = async (message: Message, query: string) => {
     }
   }
 
-  state.queue.push(
-    ...queries.map((item) => ({
-      query: item,
-      requestedBy: message.author.username,
-      textMessage: message,
-    }))
-  );
+  try {
+    for (const item of queries) {
+      await musicPlayer.play(voiceChannel.id, item, {
+        requestedBy: message.author.id,
+        nodeOptions: {
+          metadata: message,
+          leaveOnEnd: true,
+          leaveOnEmpty: true,
+          leaveOnStop: true,
+          selfDeaf: false,
+        },
+      });
+    }
 
-  if (state.isPlaying) {
-    await message.reply(
-      queries.length === 1
-        ? `✅ Adicionado à fila: **${queries[0]}**`
-        : `✅ Adicionei **${queries.length} músicas** à fila.`
-    );
-    return;
+    if (queries.length === 1) {
+      await message.reply(`✅ Adicionado: **${queries[0]}**`);
+    } else {
+      await message.reply(`✅ Adicionei **${queries.length} músicas** à fila.`);
+    }
+  } catch (error) {
+    console.error("Erro ao adicionar música:", error);
+    await message.reply("❌ Não consegui tocar/adicionar essa música.");
   }
-
-  state.playbackVersion += 1;
-  await startNext(guild.id);
 };
 
 export const skipMusic = async (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
-
-  if (!state.current) {
+  if (!queue?.currentTrack) {
     await message.reply("❌ Não tem música tocando.");
     return;
   }
 
-  if (state.isSkipping) {
-    await message.reply("⏳ Já estou pulando uma música.");
-    return;
-  }
-
-  state.isSkipping = true;
-
+  queue.node.skip();
   await message.reply("⏭️ Pulando...");
-
-  if (state.currentProcess) {
-    state.currentProcess.kill();
-    state.currentProcess = null;
-  }
-
-  state.isPlaying = false;
-  state.player.stop(true);
-
-  setTimeout(() => {
-    state.isSkipping = false;
-  }, 1500);
 };
 
 export const pauseMusic = async (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
-
-  if (!state.current) {
+  if (!queue?.currentTrack) {
     await message.reply("❌ Não tem música tocando.");
     return;
   }
 
-  if (!state.player.pause()) {
-    await message.reply("❌ Não consegui pausar.");
-    return;
-  }
-
+  queue.node.setPaused(true);
   await message.reply("⏸️ Pausado.");
 };
 
 export const resumeMusic = async (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
-
-  if (!state.current) {
+  if (!queue?.currentTrack) {
     await message.reply("❌ Não tem música tocando.");
     return;
   }
 
-  if (!state.player.unpause()) {
-    await message.reply("❌ Não consegui continuar.");
-    return;
-  }
-
+  queue.node.setPaused(false);
   await message.reply("▶️ Continuando.");
 };
 
 export const stopMusic = async (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
-
-  state.queue = [];
-
-  if (state.currentProcess) {
-    state.currentProcess.kill();
-    state.currentProcess = null;
+  if (!queue) {
+    await message.reply("❌ Não tem música tocando.");
+    return;
   }
 
-  state.current = null;
-  state.isPlaying = false;
-
-  state.player.stop();
-
-  if (state.connection) {
-    state.connection.destroy();
-    state.connection = null;
-  }
-
+  queue.delete();
   await message.reply("⏹️ Parado e fila limpa.");
 };
 
 export const getQueue = (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return [];
+  const queue = getGuildQueue(message);
+  if (!queue) return [];
 
-  return getState(guildId).queue;
+  return queue.tracks.toArray().map((track) => ({
+    query: track.title,
+    requestedBy: track.requestedBy?.username ?? "Desconhecido",
+    textMessage: message,
+  }));
 };
 
 export const getNowPlaying = (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return null;
+  const queue = getGuildQueue(message);
 
-  return getState(guildId).current;
+  if (!queue?.currentTrack) return null;
+
+  return {
+    query: queue.currentTrack.title,
+    requestedBy: queue.currentTrack.requestedBy?.username ?? "Desconhecido",
+    textMessage: message,
+  };
 };
 
 export const removeFromQueue = async (message: Message, position: number) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
-
-  const state = getState(guildId);
+  const queue = getGuildQueue(message);
   const index = position - 1;
 
-  if (Number.isNaN(index) || index < 0 || index >= state.queue.length) {
+  if (!queue || Number.isNaN(index) || index < 0 || index >= queue.tracks.size) {
     await message.reply("❌ Posição inválida.");
     return;
   }
 
-  const [removed] = state.queue.splice(index, 1);
+  const track = queue.tracks.at(index);
 
-  await message.reply(`🗑️ Removido da fila: **${removed.query}**`);
+  if (!track) {
+    await message.reply("❌ Música não encontrada nessa posição.");
+    return;
+  }
+
+  queue.removeTrack(track);
+
+  await message.reply(`🗑️ Removido da fila: **${track.title}**`);
 };
 
 export const clearQueue = async (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  getState(guildId).queue = [];
+  if (!queue) {
+    await message.reply("❌ Não tem fila ativa.");
+    return;
+  }
 
+  queue.clear();
   await message.reply("🧹 Fila limpa. A música atual continua tocando.");
 };
 
 export const shuffleQueue = async (message: Message) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
-
-  if (state.queue.length < 2) {
+  if (!queue || queue.tracks.size < 2) {
     await message.reply("❌ Precisa ter pelo menos 2 músicas na fila.");
     return;
   }
 
-  for (let i = state.queue.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-
-    const current = state.queue[i];
-    const random = state.queue[j];
-
-    state.queue[i] = random;
-    state.queue[j] = current;
-  }
-
+  queue.tracks.shuffle();
   await message.reply("🔀 Fila embaralhada.");
 };
 
@@ -578,12 +317,20 @@ export const setLoopMode = async (
   message: Message,
   mode: "off" | "song" | "queue"
 ) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
+  if (!queue) {
+    await message.reply("❌ Não tem fila ativa.");
+    return;
+  }
 
-  state.loopMode = mode;
+  const modes = {
+    off: 0,
+    song: 1,
+    queue: 2,
+  } as const;
+
+  queue.setRepeatMode(modes[mode]);
 
   const labels = {
     off: "desativado",
@@ -595,12 +342,14 @@ export const setLoopMode = async (
 };
 
 export const setAutoplay = async (message: Message, enabled: boolean) => {
-  const guildId = message.guild?.id;
-  if (!guildId) return;
+  const queue = getGuildQueue(message);
 
-  const state = getState(guildId);
+  if (!queue) {
+    await message.reply("❌ Não tem fila ativa.");
+    return;
+  }
 
-  state.autoplay = enabled;
+  queue.setRepeatMode(enabled ? 3 : 0);
 
   await message.reply(
     enabled ? "✨ Autoplay ativado." : "✨ Autoplay desativado."

@@ -4,6 +4,7 @@ import type { GuildMember, Message } from "discord.js";
 import { ChannelType, EmbedBuilder } from "discord.js";
 import { Player } from "discord-player";
 import { YoutubeiExtractor } from "discord-player-youtubei";
+import { DefaultExtractors } from "@discord-player/extractor";
 
 const require = createRequire(import.meta.url);
 const spotifyUrlInfo = require("spotify-url-info");
@@ -45,7 +46,7 @@ const getPlayer = async (message: Message) => {
   }
 
   if (!extractorsReady) {
-    await player.extractors.loadDefault();
+    await player.extractors.loadMulti(DefaultExtractors);
     await player.extractors.register(YoutubeiExtractor, {});
     extractorsReady = true;
   }

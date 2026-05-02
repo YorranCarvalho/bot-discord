@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 import type { GuildMember, Message } from "discord.js";
 import { ChannelType, EmbedBuilder } from "discord.js";
-import { Player } from "discord-player";
+import { Player, QueryType } from "discord-player";
 import { YoutubeiExtractor } from "discord-player-youtubei";
 
 const require = createRequire(import.meta.url);
@@ -185,8 +185,35 @@ export const addToQueue = async (message: Message, query: string) => {
   }
 
   try {
+    let addedCount = 0;
+
     for (const item of queries) {
-      await musicPlayer.play(voiceChannel.id, item, {
+      const searchAttempts = [
+        item,
+        `${item} official audio`,
+        `${item} official video`,
+      ];
+
+      let track = null;
+
+      for (const searchQuery of searchAttempts) {
+        const result = await musicPlayer.search(searchQuery, {
+          requestedBy: message.author.id,
+          searchEngine: QueryType.YOUTUBE_SEARCH,
+        } as any);
+
+        if (result?.tracks?.length) {
+          track = result.tracks[0];
+          break;
+        }
+      }
+
+      if (!track) {
+        await message.reply(`❌ Não encontrei resultado para: **${item}**`);
+        continue;
+      }
+
+      await musicPlayer.play(voiceChannel.id, track, {
         requestedBy: message.author.id,
         nodeOptions: {
           metadata: message,
@@ -195,13 +222,20 @@ export const addToQueue = async (message: Message, query: string) => {
           leaveOnStop: true,
           selfDeaf: false,
         },
-      });
+      } as any);
+
+      addedCount++;
+    }
+
+    if (addedCount === 0) {
+      await message.reply("❌ Nenhuma música foi adicionada.");
+      return;
     }
 
     if (queries.length === 1) {
       await message.reply(`✅ Adicionado: **${queries[0]}**`);
     } else {
-      await message.reply(`✅ Adicionei **${queries.length} músicas** à fila.`);
+      await message.reply(`✅ Adicionei **${addedCount} músicas** à fila.`);
     }
   } catch (error) {
     console.error("Erro ao adicionar música:", error);

@@ -230,13 +230,13 @@ const startNext = async (guildId: string) => {
       "--no-warnings",
       "--encoding",
       "utf-8",
+      "--cookies",
+      "/home/ubuntu/bot-discord/cookies.txt",
       "-f",
       "bestaudio[ext=webm]/bestaudio/best",
       "--no-playlist",
       "-o",
       "-",
-      "--cookies",
-      "/home/ubuntu/bot-discord/cookies.txt",
       sourceInput,
     ];
 

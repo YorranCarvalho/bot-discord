@@ -236,6 +236,8 @@ const startNext = async (guildId: string) => {
       "youtube:player_client=android,ios,web",
       "--force-ipv4",
       "--geo-bypass",
+      "--cookies",
+      "/home/ubuntu/bot-discord/cookies.txt",
       "--no-playlist",
       "-o",
       "-",

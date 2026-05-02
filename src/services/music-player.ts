@@ -1,19 +1,26 @@
 import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
 
 import type { GuildMember, Message } from "discord.js";
 import { ChannelType, EmbedBuilder } from "discord.js";
 import { Player } from "discord-player";
 import { YoutubeiExtractor } from "discord-player-youtubei";
-import { DefaultExtractors } from "@discord-player/extractor";
 
 const require = createRequire(import.meta.url);
 const spotifyUrlInfo = require("spotify-url-info");
 const { getData } = spotifyUrlInfo(fetch);
 
 const MAX_PLAYLIST_SIZE = 50;
+const COOKIES_PATH =
+  process.env.YOUTUBE_COOKIES_PATH ?? "/home/ubuntu/bot-discord/cookies.txt";
 
 let player: Player | null = null;
 let extractorsReady = false;
+
+const getYoutubeCookie = () => {
+  if (!existsSync(COOKIES_PATH)) return undefined;
+  return readFileSync(COOKIES_PATH, "utf8");
+};
 
 const getPlayer = async (message: Message) => {
   if (!player) {
@@ -46,17 +53,20 @@ const getPlayer = async (message: Message) => {
   }
 
   if (!extractorsReady) {
-    await player.extractors.loadMulti(DefaultExtractors);
-    await player.extractors.register(YoutubeiExtractor, {});
+    await player.extractors.register(YoutubeiExtractor, {
+      cookie: getYoutubeCookie(),
+      disablePlayer: true,
+      ignoreSignInErrors: true,
+      overrideBridgeMode: "ytmusic",
+      streamOptions: {
+        useClient: "ANDROID",
+      },
+    } as any);
+
     extractorsReady = true;
   }
 
   return player;
-};
-
-const sendToChannel = async (message: Message, content: string) => {
-  if (!message.channel.isSendable()) return;
-  await message.channel.send(content);
 };
 
 const isSpotifyUrl = (input: string) => input.includes("open.spotify.com");
@@ -99,7 +109,7 @@ const resolveSpotifyToQueries = async (input: string): Promise<string[]> => {
   if (data.type === "playlist") {
     const items = data.trackList || data.tracks?.items || data.tracks || [];
 
-    if (!Array.isArray(items) || items.length === 0) return [];
+    if (!Array.isArray(items) || !items.length) return [];
 
     return items
       .slice(0, MAX_PLAYLIST_SIZE)
@@ -110,7 +120,7 @@ const resolveSpotifyToQueries = async (input: string): Promise<string[]> => {
   if (data.type === "album") {
     const items = data.trackList || data.tracks?.items || data.tracks || [];
 
-    if (!Array.isArray(items) || items.length === 0) return [];
+    if (!Array.isArray(items) || !items.length) return [];
 
     const albumArtists = Array.isArray(data.artists)
       ? data.artists.map((artist: any) => artist.name).join(", ")

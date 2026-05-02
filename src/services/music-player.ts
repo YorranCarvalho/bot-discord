@@ -16,7 +16,7 @@ let extractorsReady = false;
 
 const getPlayer = async (message: Message) => {
   if (!player) {
-    player = new Player(message.client);
+    player = new Player(message.client as any);
 
     player.events.on("playerStart", async (queue, track) => {
       const metadata = queue.metadata as Message | undefined;
@@ -45,6 +45,7 @@ const getPlayer = async (message: Message) => {
   }
 
   if (!extractorsReady) {
+    await player.extractors.loadDefault();
     await player.extractors.register(YoutubeiExtractor, {});
     extractorsReady = true;
   }

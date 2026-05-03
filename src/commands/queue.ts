@@ -15,7 +15,7 @@ export const queueCommand: Command = {
 
     const list = queue
       .slice(0, 10)
-      .map((item, index) => `${index + 1}. ${item.query}`)
+      .map((item, index) => `${index + 1}. ${item.info.title}`)
       .join("\n");
 
     await message.reply(`📜 **Fila atual**\n${list}`);

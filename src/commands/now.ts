@@ -13,6 +13,6 @@ export const nowCommand: Command = {
       return;
     }
 
-    await message.reply(`🎵 Tocando agora: **${current.query}**`);
+    await message.reply(`🎵 Tocando agora: **${current.info.title}**`);
   },
 };

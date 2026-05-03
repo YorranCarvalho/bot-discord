@@ -12,9 +12,10 @@ import { removeCommand } from "./commands/remove.js";
 import { resumeCommand } from "./commands/resume.js";
 import { shuffleCommand } from "./commands/shuffle.js";
 import { stopCommand } from "./commands/stop.js";
-import type { Command } from "./types/commands.js";
 import { autoplayCommand } from "./commands/autoplay.js";
 import { loopCommand } from "./commands/loop.js";
+import { skipCommand } from "./commands/skip.js";
+
 import { israelCommand } from "./commands/israel.js";
 import { russiaCommand } from "./commands/russian.js";
 import { perguntaCommand } from "./commands/pergunta.js";
@@ -22,7 +23,8 @@ import { womanCommand } from "./commands/woman.js";
 import { animeCommand } from "./commands/anime.js";
 import { usaCommand } from "./commands/usa.js";
 import { warCommand } from "./commands/war.js";
-import { skipCommand } from "./commands/skip.js";
+
+import type { Command } from "./types/commands.js";
 
 const token = process.env.DISCORD_TOKEN;
 const PREFIX = ".";
@@ -50,11 +52,17 @@ export const lavalink = new LavalinkManager({
       secure: false,
     },
   ],
+
   sendToShard: (guildId, payload) => {
     const guild = client.guilds.cache.get(guildId);
-    if (guild) guild.shard.send(payload);
+
+    if (!guild) return;
+
+    guild.shard.send(payload);
   },
+
   autoSkip: true,
+
   client: {
     id: "0",
     username: "bot",
@@ -76,6 +84,7 @@ commands.set(clearCommand.name, clearCommand);
 commands.set(shuffleCommand.name, shuffleCommand);
 commands.set(loopCommand.name, loopCommand);
 commands.set(autoplayCommand.name, autoplayCommand);
+
 commands.set(israelCommand.name, israelCommand);
 commands.set(russiaCommand.name, russiaCommand);
 commands.set(perguntaCommand.name, perguntaCommand);
@@ -107,14 +116,14 @@ lavalink.on("trackStart", (player, track) => {
   }
 });
 
-lavalink.on("queueEnd", (player) => {
+lavalink.on("queueEnd", async (player) => {
   const channel = client.channels.cache.get(player.textChannelId || "");
 
   if (channel?.isSendable()) {
-    channel.send("✅ Fila finalizada.");
+    await channel.send("✅ Fila finalizada.");
   }
 
-  player.destroy();
+  await player.destroy();
 });
 
 lavalink.on("trackError", (player, track, payload) => {
@@ -141,7 +150,12 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  await command.execute(message, args);
+  try {
+    await command.execute(message, args);
+  } catch (error) {
+    console.error(`Erro ao executar comando ${commandName}:`, error);
+    await message.reply("❌ Deu erro ao executar esse comando.");
+  }
 });
 
 client.login(token);

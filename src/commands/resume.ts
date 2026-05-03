@@ -1,11 +1,19 @@
 import type { Command } from "../types/commands.js";
-import { resumeMusic } from "../services/music-player.js";
+import { lavalink } from "../index.js";
 
 export const resumeCommand: Command = {
   name: "resume",
   description: "Continua a música pausada",
 
   async execute(message) {
-    await resumeMusic(message);
+    const player = message.guild ? lavalink.getPlayer(message.guild.id) : null;
+
+    if (!player) {
+      await message.reply("❌ Nada tocando.");
+      return;
+    }
+
+    await player.resume();
+    await message.reply("▶️ Continuando.");
   },
 };

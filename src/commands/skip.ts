@@ -1,11 +1,19 @@
 import type { Command } from "../types/commands.js";
-import { skipMusic } from "../services/music-player.js";
+import { lavalink } from "../index.js";
 
 export const skipCommand: Command = {
   name: "skip",
   description: "Pula a música atual",
 
   async execute(message) {
-    await skipMusic(message);
+    const player = message.guild ? lavalink.getPlayer(message.guild.id) : null;
+
+    if (!player) {
+      await message.reply("❌ Nada tocando.");
+      return;
+    }
+
+    await player.skip();
+    await message.reply("⏭️ Pulando...");
   },
 };

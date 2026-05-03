@@ -58,7 +58,7 @@ export const lavalink = new LavalinkManager({
 
     if (!guild) return;
 
-    guild.shard.send(payload);
+    client.ws.shards.get(guild.shardId)?.send(payload);
   },
 
   autoSkip: true,

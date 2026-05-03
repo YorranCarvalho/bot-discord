@@ -26,10 +26,14 @@ export const addToQueue = async (message: Message, query: string) => {
 
   await player.connect();
 
+  const searchQuery =
+    query.startsWith("http://") || query.startsWith("https://")
+      ? query
+      : `ytsearch:${query}`;
+
   const result = await player.search(
     {
-      query,
-      source: "youtube",
+      query: searchQuery,
     },
     message.author
   );
